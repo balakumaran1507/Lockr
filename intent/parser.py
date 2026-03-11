@@ -9,14 +9,12 @@ from typing import Optional
 from .prompts import (
     ParsedIntent,
     IntentType,
-    RiskLevel,
-    INTENT_RISK_MAP,
-    CONFIRM_REQUIRED,
+    COMMAND_CATALOG,
     SYSTEM_PROMPT,
 )
 
 OLLAMA_URL   = "http://localhost:11434/api/chat"
-OLLAMA_MODEL = "qwen2.5-coder:7b-instruct-q4_K_M"
+OLLAMA_MODEL = "qwen2.5-coder:7b"
 TIMEOUT_S    = 60
 
 
@@ -67,7 +65,6 @@ def is_ollama_running() -> bool:
 def _fallback_intent(user_input: str) -> ParsedIntent:
     """
     Keyword fallback — vault stays operable even with no LLM.
-    Confidence always 0.4 so executor gates on confirm.
     """
     text = user_input.lower()
 
@@ -94,15 +91,13 @@ def _fallback_intent(user_input: str) -> ParsedIntent:
     else:
         intent = IntentType.UNKNOWN
 
-    risk = INTENT_RISK_MAP[intent]
+    command = COMMAND_CATALOG.get(intent, "")
 
     return ParsedIntent(
         intent=intent.value,
-        confidence=0.4,
-        risk=risk.value,
+        command=command,
         args={},
-        requires_confirm=(intent in CONFIRM_REQUIRED or risk == RiskLevel.HIGH),
-        summary=f"[fallback] Detected intent: {intent.value}. Args need manual confirmation.",
+        summary=f"[fallback] Detected intent: {intent.value}. Use specific CLI command for best results.",
     )
 
 
@@ -112,36 +107,18 @@ def _fallback_intent(user_input: str) -> ParsedIntent:
 
 def _validate_and_repair(raw: dict, user_input: str) -> ParsedIntent:
     valid_intents = {i.value for i in IntentType}
-    valid_risks   = {r.value for r in RiskLevel}
 
     intent_str = raw.get("intent", IntentType.UNKNOWN.value)
     if intent_str not in valid_intents:
         intent_str = IntentType.UNKNOWN.value
 
-    intent       = IntentType(intent_str)
-    llm_risk     = raw.get("risk", "low")
-    catalog_risk = INTENT_RISK_MAP[intent].value
-    risk_order   = {"low": 0, "medium": 1, "high": 2}
-
-    if llm_risk not in valid_risks:
-        llm_risk = catalog_risk
-
-    # Floor risk at catalog minimum — LLM can't downgrade safety level
-    resolved_risk = llm_risk if risk_order[llm_risk] >= risk_order[catalog_risk] else catalog_risk
-
-    confidence = float(raw.get("confidence", 0.0))
-    requires_confirm = (
-        raw.get("requires_confirm", False)
-        or intent in CONFIRM_REQUIRED
-        or confidence < 0.7
-    )
+    intent = IntentType(intent_str)
+    command = raw.get("command", COMMAND_CATALOG.get(intent, ""))
 
     return ParsedIntent(
         intent=intent.value,
-        confidence=confidence,
-        risk=resolved_risk,
+        command=command,
         args=raw.get("args", {}),
-        requires_confirm=requires_confirm,
         summary=raw.get("summary", f"Execute {intent.value} based on: '{user_input}'"),
     )
 

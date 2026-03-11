@@ -1,0 +1,41 @@
+{
+  "name": "HIPAA",
+  "version": "2024",
+  "controls": [
+    {
+      "id": "164.308(a)(3)",
+      "title": "Workforce Access Management",
+      "description": "Implement policies for authorizing access to ePHI",
+      "automated": true,
+      "check_function": "check_access_control",
+      "category": "access_control"
+    },
+    {
+      "id": "164.308(a)(5)",
+      "title": "Log-in Monitoring",
+      "description": "Monitor login attempts and track access",
+      "automated": true,
+      "check_function": "check_audit_log",
+      "category": "monitoring"
+    },
+    {
+      "id": "164.312(a)(2)",
+      "title": "Encryption",
+      "description": "Encrypt ePHI at rest and in transit",
+      "automated": true,
+      "check_function": "check_encryption",
+      "category": "cryptography"
+    },
+    {
+      "id": "164.308(a)(4)",
+      "title": "Information Access Management",
+      "description": "Implement procedures for access authorization",
+      "automated": false,
+      "category": "access_control"
+    }
+  ],
+  "metadata": {
+    "description": "HIPAA Security Rule compliance framework",
+    "applicable_to": "Healthcare organizations handling ePHI"
+  }
+}

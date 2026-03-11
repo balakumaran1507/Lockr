@@ -1,0 +1,2 @@
+[console_scripts]
+lockr = cli.lockr:cli

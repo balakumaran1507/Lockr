@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-main.py — Vaultless FastAPI server.
+main.py — Lockr FastAPI server.
 
 Wires: auth → store → audit → intent layer
 All requests logged to audit before touching vault core.
@@ -92,11 +92,11 @@ class AskRequest(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if not vault.is_initialised():
-        raise RuntimeError(".vault/ not found. Run `vaultless init` first.")
+        raise RuntimeError(".vault/ not found. Run `lockr init` first.")
     yield
 
 app = FastAPI(
-    title="Vaultless",
+    title="Lockr",
     version="0.1.0",
     description="Git-architecture secrets manager with PQ encryption and SOC-2 evidence.",
     lifespan=lifespan,

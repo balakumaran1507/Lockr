@@ -1,5 +1,5 @@
 Metadata-Version: 2.4
-Name: vaultless
+Name: lockr
 Version: 0.1.0
 Summary: Git-architecture secrets manager with post-quantum encryption and SOC-2 evidence.
 Requires-Python: >=3.11

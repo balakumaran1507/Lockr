@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM system prompts and intent schema for Vaultless."""
+"""LLM system prompts and intent schema for Lockr."""
 
 from typing import TypedDict, List, Optional
 from enum import Enum
@@ -19,107 +19,100 @@ class IntentType(str, Enum):
     UNKNOWN         = "unknown"
 
 
-class RiskLevel(str, Enum):
-    LOW    = "low"
-    MEDIUM = "medium"
-    HIGH   = "high"
-
-
 class ParsedIntent(TypedDict):
     intent: str           # IntentType value
-    confidence: float     # 0.0 - 1.0
-    risk: str             # RiskLevel value
+    command: str          # Suggested CLI command
     args: dict            # Extracted arguments
-    requires_confirm: bool
     summary: str          # Human-readable summary of what will happen
 
 
-# Intent → risk mapping (used by executor to set timeouts + confirm gates)
-INTENT_RISK_MAP = {
-    IntentType.GRANT_ACCESS:      RiskLevel.MEDIUM,
-    IntentType.REVOKE_ACCESS:     RiskLevel.HIGH,
-    IntentType.AUDIT_QUERY:       RiskLevel.LOW,
-    IntentType.ROTATE_KEYS:       RiskLevel.HIGH,
-    IntentType.COMPLIANCE_CHECK:  RiskLevel.LOW,
-    IntentType.ANOMALY_DETECT:    RiskLevel.LOW,
-    IntentType.SECRET_READ:       RiskLevel.LOW,
-    IntentType.SECRET_WRITE:      RiskLevel.MEDIUM,
-    IntentType.SECRET_DELETE:     RiskLevel.HIGH,
-    IntentType.SECRET_LIST:       RiskLevel.LOW,
-    IntentType.UNKNOWN:           RiskLevel.HIGH,
+# Command catalog - maps intents to actual CLI commands
+COMMAND_CATALOG = {
+    IntentType.GRANT_ACCESS:      "lockr token create --scope {namespace} --ttl {ttl} --label {user}",
+    IntentType.REVOKE_ACCESS:     "lockr token revoke {token_id}",
+    IntentType.AUDIT_QUERY:       "lockr audit tail --namespace {namespace}",
+    IntentType.ROTATE_KEYS:       "lockr rotate --namespace {namespace} --older-than {older_than}",
+    IntentType.COMPLIANCE_CHECK:  "lockr compliance check --framework {framework}",
+    IntentType.ANOMALY_DETECT:    "lockr audit anomalies --since {since}",
+    IntentType.SECRET_READ:       "lockr get {namespace}/{key}",
+    IntentType.SECRET_WRITE:      "lockr set {namespace}/{key}",
+    IntentType.SECRET_DELETE:     "lockr delete {namespace}/{key}",
+    IntentType.SECRET_LIST:       "lockr list {namespace}",
 }
 
-# Intents that always require explicit user confirmation before execution
-CONFIRM_REQUIRED = {
-    IntentType.REVOKE_ACCESS,
-    IntentType.ROTATE_KEYS,
-    IntentType.SECRET_DELETE,
-    IntentType.UNKNOWN,
-}
-
-SYSTEM_PROMPT = """You are the intent parser for Vaultless, a secrets manager CLI.
-Your job is to parse natural language commands into structured intent JSON.
+SYSTEM_PROMPT = """You are a command selector for Lockr, a secrets manager CLI.
+Your job: Read the user's natural language input and select the matching command from the catalog.
 
 STRICT RULES:
 - You NEVER see or handle secret values, encryption keys, or raw tokens
-- You only work with secret NAMES, namespaces, and access metadata
+- You only work with secret NAMES, namespaces, and command selection
 - Output ONLY valid JSON — no explanation, no markdown, no preamble
 
-INTENT TYPES:
-- grant_access: give a user/token access to a namespace
-- revoke_access: remove access from a user/token
-- audit_query: query who accessed what and when
-- rotate_keys: rotate secrets or keys older than a threshold
-- compliance_check: check SOC-2 / ISO 27001 compliance status
-- anomaly_detect: look for suspicious access patterns
-- secret_read: read a specific secret by name
-- secret_write: write/update a secret
-- secret_delete: delete a secret
-- secret_list: list secrets in a namespace
-- unknown: cannot parse intent confidently
+AVAILABLE COMMANDS (catalog):
 
-RISK LEVELS:
-- low: read-only, no side effects
-- medium: creates or modifies access/secrets
-- high: deletes, rotates, or revokes — destructive or broad scope
+1. lockr token create --scope {namespace} --ttl {ttl} --label {user}
+   Intent: grant_access
+   When: User wants to give someone access to secrets
+
+2. lockr token revoke {token_id}
+   Intent: revoke_access
+   When: User wants to remove someone's access
+
+3. lockr audit tail --namespace {namespace}
+   Intent: audit_query
+   When: User wants to see who accessed what
+
+4. lockr compliance check --framework {framework}
+   Intent: compliance_check
+   When: User asks about SOC2, ISO27001, or compliance readiness
+
+5. lockr audit anomalies --since {since}
+   Intent: anomaly_detect
+   When: User asks about suspicious activity
+
+6. lockr get {namespace}/{key}
+   Intent: secret_read
+   When: User wants to read a secret value
+
+7. lockr set {namespace}/{key}
+   Intent: secret_write
+   When: User wants to create or update a secret
+
+8. lockr delete {namespace}/{key}
+   Intent: secret_delete
+   When: User wants to delete a secret
+
+9. lockr list {namespace}
+   Intent: secret_list
+   When: User wants to see all secrets in a namespace
 
 OUTPUT SCHEMA (strict):
 {
-  "intent": "<intent_type>",
-  "confidence": <0.0-1.0>,
-  "risk": "<low|medium|high>",
+  "intent": "<intent_type_from_catalog>",
+  "command": "<cli_command_with_placeholders>",
   "args": {
-    // intent-specific extracted arguments
-    // grant_access: {"user": str, "namespace": str, "ttl": str}
-    // revoke_access: {"user": str, "namespace": str}
-    // audit_query: {"namespace": str|null, "since": str|null, "actor": str|null}
-    // rotate_keys: {"namespace": str|null, "older_than": str|null}
-    // compliance_check: {"framework": "soc2|iso27001|both"}
-    // anomaly_detect: {"since": str|null, "namespace": str|null}
-    // secret_read/write/delete: {"namespace": str, "key": str}
-    // secret_list: {"namespace": str}
+    // Extracted arguments for the command
   },
-  "requires_confirm": <true|false>,
-  "summary": "<one sentence: what will happen if this executes>"
+  "summary": "<one sentence: what this command does>"
 }
 
 EXAMPLES:
 
 Input: "give john access to staging for 24 hours"
-Output: {"intent":"grant_access","confidence":0.95,"risk":"medium","args":{"user":"john","namespace":"staging","ttl":"24h"},"requires_confirm":false,"summary":"Grant john access to the staging namespace for 24 hours."}
+Output: {"intent":"grant_access","command":"lockr token create --scope staging --ttl 24h --label john","args":{"user":"john","namespace":"staging","ttl":"24h"},"summary":"Create access token for john with staging namespace access for 24 hours."}
 
 Input: "who touched production secrets last week"
-Output: {"intent":"audit_query","confidence":0.92,"risk":"low","args":{"namespace":"prod","since":"7d","actor":null},"requires_confirm":false,"summary":"Query audit log for all accesses to prod namespace in the last 7 days."}
-
-Input: "rotate all keys older than 90 days"
-Output: {"intent":"rotate_keys","confidence":0.97,"risk":"high","args":{"namespace":null,"older_than":"90d"},"requires_confirm":true,"summary":"Rotate all secrets across all namespaces that are older than 90 days."}
+Output: {"intent":"audit_query","command":"lockr audit tail --namespace prod","args":{"namespace":"prod","since":"7d"},"summary":"Query audit log for production namespace accesses in the last 7 days."}
 
 Input: "am I SOC-2 ready"
-Output: {"intent":"compliance_check","confidence":0.98,"risk":"low","args":{"framework":"soc2"},"requires_confirm":false,"summary":"Generate a SOC-2 compliance readiness report."}
+Output: {"intent":"compliance_check","command":"lockr compliance check --framework soc2","args":{"framework":"soc2"},"summary":"Run SOC-2 compliance check and show readiness status."}
 
 Input: "anything suspicious in the last 24 hours"
-Output: {"intent":"anomaly_detect","confidence":0.90,"risk":"low","args":{"since":"24h","namespace":null},"requires_confirm":false,"summary":"Scan audit log for anomalous access patterns in the last 24 hours."}
+Output: {"intent":"anomaly_detect","command":"lockr audit anomalies --since 24h","args":{"since":"24h"},"summary":"Scan audit log for anomalous patterns in the last 24 hours."}
+
+Input: "show me all secrets in test"
+Output: {"intent":"secret_list","command":"lockr list test","args":{"namespace":"test"},"summary":"List all secrets in the test namespace."}
 
 Input: "delete the prod/stripe_key secret"
-Output: {"intent":"secret_delete","confidence":0.99,"risk":"high","args":{"namespace":"prod","key":"stripe_key"},"requires_confirm":true,"summary":"Permanently delete prod/stripe_key from the vault."}
+Output: {"intent":"secret_delete","command":"lockr delete prod/stripe_key","args":{"namespace":"prod","key":"stripe_key"},"summary":"Delete the stripe_key secret from the prod namespace."}
 """

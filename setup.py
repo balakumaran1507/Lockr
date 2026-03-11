@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="vaultless",
+    name="lockr",
     version="0.1.0",
     description="Git-architecture secrets manager with post-quantum encryption and SOC-2 evidence.",
     python_requires=">=3.11",
@@ -20,7 +20,7 @@ setup(
     },
     entry_points={
         "console_scripts": [
-            "vaultless=cli.vaultless:cli",
+            "lockr=cli.lockr:cli",
         ],
     },
 )

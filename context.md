@@ -1,11 +1,11 @@
-# Vaultless — Project Context
+# Lockr — Project Context
 > Share this file with any AI model to get full context on the project.
 
 ---
 
 ## What We're Building
 
-**Vaultless** — A git-architecture-inspired secrets manager with an LLM intent layer and built-in ISO 27001 / SOC-2 compliance reporting.
+**Lockr** — A git-architecture-inspired secrets manager with an LLM intent layer and built-in ISO 27001 / SOC-2 compliance reporting.
 
 **One-line pitch:**
 > "The only secrets manager that comes with your SOC-2 evidence pre-built."
@@ -20,7 +20,7 @@ MVP is built. All core layers are implemented and wired together.
 .
 ├── cli/
 │   ├── __init__.py
-│   └── vaultless.py        ✅ Click CLI — full command surface
+│   └── lockr.py        ✅ Click CLI — full command surface
 ├── intent/
 │   ├── __init__.py
 │   ├── executor.py         ✅ Validated intent dispatch
@@ -33,14 +33,14 @@ MVP is built. All core layers are implemented and wired together.
 │   ├── crypto.py           ✅ FrodoKEM-1344 PQ KEK + AES-256-GCM DEK
 │   ├── main.py             ✅ FastAPI — all endpoints wired
 │   └── store.py            ✅ Git-style .vault/ content-addressable store
-└── setup.py                ✅ pip install -e . → vaultless binary
+└── setup.py                ✅ pip install -e . → lockr binary
 ```
 
 **Install:**
 ```bash
-pip install -e .          # installs vaultless binary
+pip install -e .          # installs lockr binary
 pip install -e ".[pq]"   # + FrodoKEM (requires: yay -S liboqs)
-vaultless --help
+lockr --help
 ```
 
 ---
@@ -65,7 +65,7 @@ Existing lightweight alternatives (SOPS, git-secret, git-crypt) are:
 ## Core Architecture
 
 ### The `.git` Mental Model
-Vaultless stores secrets exactly like git stores objects — content-addressable, hash-referenced, branchable.
+Lockr stores secrets exactly like git stores objects — content-addressable, hash-referenced, branchable.
 
 ```
 .vault/
@@ -93,7 +93,7 @@ Flow:
   encrypt(plaintext, path):
     pk, _ = load_master_key()
     kem_ct, shared_secret = frodo_encapsulate(pk)
-    aes_key = HKDF(shared_secret, info="vaultless-dek-wrap-v1" + path)
+    aes_key = HKDF(shared_secret, info="lockr-dek-wrap-v1" + path)
     ciphertext = AES-256-GCM(aes_key, plaintext, aad=path)
     store EncryptedBlob(kem_ct, nonce, ciphertext, aad)
 ```
@@ -103,7 +103,7 @@ Flow:
 - Most conservative PQ option, hardest to break with future math
 - NIST security level 5 (≥ AES-256)
 
-**KEK storage:** `VAULT_MASTER_KEY` env var (base64-encoded keypair). Generated on `vaultless init`. Never committed to git.
+**KEK storage:** `VAULT_MASTER_KEY` env var (base64-encoded keypair). Generated on `lockr init`. Never committed to git.
 
 ### Intent Layer
 ```
@@ -139,7 +139,7 @@ raw token strings        token metadata only
 }
 ```
 Hash chain: `entry.hash = SHA256(prev_hash + canonical_json(entry_body))`
-Satisfies SOC-2 CC7.2. Verify with `vaultless audit verify`.
+Satisfies SOC-2 CC7.2. Verify with `lockr audit verify`.
 
 ---
 
@@ -147,44 +147,44 @@ Satisfies SOC-2 CC7.2. Verify with `vaultless audit verify`.
 
 ```bash
 # Init
-vaultless init                          # creates .vault/, generates FrodoKEM keypair
+lockr init                          # creates .vault/, generates FrodoKEM keypair
 
 # Secrets
-vaultless set myapp/db_password         # prompts for value
-vaultless get myapp/db_password         # prints value
-vaultless get myapp/db_password --raw   # pipeable (no decoration)
-vaultless delete myapp/db_password
-vaultless list myapp/
+lockr set myapp/db_password         # prompts for value
+lockr get myapp/db_password         # prints value
+lockr get myapp/db_password --raw   # pipeable (no decoration)
+lockr delete myapp/db_password
+lockr list myapp/
 
 # Environments
-vaultless checkout staging
-vaultless merge staging prod            # promote secrets
-vaultless status                        # current env + PQ status + chain health
+lockr checkout staging
+lockr merge staging prod            # promote secrets
+lockr status                        # current env + PQ status + chain health
 
 # Tokens
-vaultless token create --scope "myapp/*" --ttl 24h --label john
-vaultless token revoke tk_abc123
-vaultless token list
+lockr token create --scope "myapp/*" --ttl 24h --label john
+lockr token revoke tk_abc123
+lockr token list
 
 # LLM intent
-vaultless ask "give john access to staging for 24 hours"
-vaultless ask "who touched production secrets last week"
-vaultless ask "rotate all keys older than 90 days"
-vaultless ask "am I SOC-2 ready"
-vaultless ask "anything suspicious in the last 24 hours"
+lockr ask "give john access to staging for 24 hours"
+lockr ask "who touched production secrets last week"
+lockr ask "rotate all keys older than 90 days"
+lockr ask "am I SOC-2 ready"
+lockr ask "anything suspicious in the last 24 hours"
 
 # Zero-code-change app runner
-vaultless run --namespace myapp -- python app.py
+lockr run --namespace myapp -- python app.py
 # myapp/db_password → MYAPP_DB_PASSWORD injected at runtime
 
 # Compliance
-vaultless compliance report --framework soc2
-vaultless compliance report --framework iso27001 --output report.txt
+lockr compliance report --framework soc2
+lockr compliance report --framework iso27001 --output report.txt
 
 # Audit
-vaultless audit tail
-vaultless audit verify
-vaultless audit anomalies
+lockr audit tail
+lockr audit verify
+lockr audit anomalies
 ```
 
 ---
@@ -212,7 +212,7 @@ Auth: `Authorization: Bearer tk_...` header. Admin token (scope=`*`) required fo
 
 ## Compliance Map
 
-| Auditor Question | ISO 27001 | SOC-2 | Vaultless Feature |
+| Auditor Question | ISO 27001 | SOC-2 | Lockr Feature |
 |---|---|---|---|
 | Who accessed what and when? | A.8.15 | CC7.2 | Hash-chained audit log |
 | Who has prod access? | A.5.18 | CC6.1 | RBAC + scoped tokens |
@@ -221,7 +221,7 @@ Auth: `Authorization: Bearer tk_...` header. Admin token (scope=`*`) required fo
 | Can you show access reviews? | A.8.2 | CC6.3 | `compliance report` |
 | Key rotation policy? | A.8.24 | CC6.7 | TTL + rotation commands |
 | Environment separation? | A.8.25 | CC6.6 | Git-style branches |
-| Disaster recovery? | A.17.1 | A1.2 | `vaultless push` (TODO) |
+| Disaster recovery? | A.17.1 | A1.2 | `lockr push` (TODO) |
 
 ---
 
@@ -233,7 +233,7 @@ Phase 5 — Ship
   Dockerfile
   docker-compose.yml
   README.md
-  vaultless push/pull  remote sync (git-style)
+  lockr push/pull  remote sync (git-style)
   crypto.py            key rotation command
 ```
 
@@ -251,7 +251,7 @@ Python 3.11+
 ├── pydantic      → request validation
 └── rich          → CLI output
 
-LLM:     qwen2.5-coder:7b-instruct-q4_K_M via Ollama (localhost:11434)
+LLM:     qwen2.5-coder:7b via Ollama (localhost:11434)
 Storage: .vault/ on disk — no database
 ```
 
@@ -264,7 +264,7 @@ Storage: .vault/ on disk — no database
 - Unauthorized reads (token auth + RBAC)
 - Tampered audit logs (hash chain)
 - Expired/revoked token reuse (TTL enforcement)
-- Accidental env var exposure (`vaultless run` injects at runtime only)
+- Accidental env var exposure (`lockr run` injects at runtime only)
 - Harvest-now-decrypt-later attacks on KEK (FrodoKEM-1344)
 
 **Does NOT protect against:**

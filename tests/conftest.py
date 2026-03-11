@@ -1,4 +1,4 @@
-"""Pytest configuration for Vaultless tests."""
+"""Pytest configuration for Lockr tests."""
 import sys
 from pathlib import Path
 

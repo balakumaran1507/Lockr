@@ -13,7 +13,7 @@ FrodoKEM-1344 is the most conservative PQ KEM:
   - Larger keys/ciphertext than Kyber, but immune to algebraic attacks
 
 Env vars:
-  VAULT_MASTER_KEY   base64-encoded FrodoKEM secret key (from `vaultless init`)
+  VAULT_MASTER_KEY   base64-encoded FrodoKEM secret key (from `lockr init`)
 """
 
 import os
@@ -159,7 +159,7 @@ def _derive_aes_key(shared_secret: bytes, aad: bytes) -> bytes:
         algorithm=hashes.SHA256(),
         length=32,
         salt=None,
-        info=b"vaultless-dek-wrap-v1" + aad,
+        info=b"lockr-dek-wrap-v1" + aad,
     ).derive(shared_secret)
 
 
@@ -172,7 +172,7 @@ def _load_master_key() -> Tuple[bytes, bytes]:
     raw = os.environ.get("VAULT_MASTER_KEY")
     if not raw:
         raise RuntimeError(
-            "VAULT_MASTER_KEY not set. Run `vaultless init` to generate keys."
+            "VAULT_MASTER_KEY not set. Run `lockr init` to generate keys."
         )
     data = base64.b64decode(raw)
     # Format: 4-byte pk_len | pk | sk

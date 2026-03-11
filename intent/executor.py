@@ -13,10 +13,7 @@ from typing import Callable, Dict, Any, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-# Re-use command-butler's execution primitives for subprocess safety
-from butler.core.enhanced_executor import ExecutionResult, run_command_with_progress
-
-from .prompts import IntentType, RiskLevel, ParsedIntent, CONFIRM_REQUIRED
+from .prompts import IntentType, ParsedIntent
 
 
 class ExecutionStatus(str, Enum):
@@ -32,7 +29,7 @@ class IntentResult:
     status:  ExecutionStatus
     message: str
     data:    Optional[Dict[str, Any]] = None
-    risk:    str = "low"
+    command: str = ""  # Suggested CLI command
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +125,7 @@ def _exec_grant_access(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"✅ Granted {user} access to '{ns}' for {ttl}.",
         data={"user": user, "namespace": ns, "ttl": ttl},
-        risk="medium",
+        
     )
 
 
@@ -140,7 +137,7 @@ def _exec_revoke_access(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"✅ Revoked {user}'s access to '{ns}'.",
         data={"user": user, "namespace": ns},
-        risk="high",
+        
     )
 
 
@@ -156,7 +153,7 @@ def _exec_audit_query(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=msg,
         data=args,
-        risk="low",
+        
     )
 
 
@@ -168,19 +165,47 @@ def _exec_rotate_keys(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"🔄 Rotated keys in {ns} older than {older}.",
         data=args,
-        risk="high",
+        
     )
 
 
 def _exec_compliance_check(args: dict) -> IntentResult:
-    framework = args.get("framework", "both")
-    # TODO: vault.compliance.generate_report(framework=framework)
-    return IntentResult(
-        status=ExecutionStatus.SUCCESS,
-        message=f"📊 Generated {framework.upper()} compliance report.",
-        data={"framework": framework},
-        risk="low",
-    )
+    framework = args.get("framework", "soc2")
+
+    try:
+        from server.compliance import FrameworkStore, ComplianceChecker
+
+        store = FrameworkStore()
+        checker = ComplianceChecker()
+
+        fw = store.load_framework(framework)
+        if not fw:
+            return IntentResult(
+                status=ExecutionStatus.FAILED,
+                message=f"❌ Framework '{framework}' not found. Available: {', '.join(store.list_frameworks())}",
+                data={"framework": framework},
+                
+            )
+
+        results = checker.check_framework(fw)
+        summary = checker.generate_summary(results)
+
+        # Save results
+        store.save_results(fw.name, results)
+
+        return IntentResult(
+            status=ExecutionStatus.SUCCESS,
+            message=f"✅ {framework.upper()} compliance check complete. Score: {summary['compliance_score']}% | Passed: {summary['passed']}/{summary['total_controls']} | Audit Ready: {summary['ready_for_audit']}",
+            data={"framework": framework, "summary": summary},
+            
+        )
+    except Exception as e:
+        return IntentResult(
+            status=ExecutionStatus.FAILED,
+            message=f"❌ Compliance check failed: {str(e)}",
+            data={"framework": framework},
+            
+        )
 
 
 def _exec_anomaly_detect(args: dict) -> IntentResult:
@@ -191,7 +216,7 @@ def _exec_anomaly_detect(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"🔍 Scanned {ns} for anomalies in last {since}.",
         data=args,
-        risk="low",
+        
     )
 
 
@@ -203,7 +228,7 @@ def _exec_secret_read(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"🔑 Read secret '{ns}/{key}'.",
         data={"namespace": ns, "key": key},
-        risk="low",
+        
     )
 
 
@@ -217,7 +242,7 @@ def _exec_secret_write(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"✏️  Wrote secret '{ns}/{key}'. (value prompted separately)",
         data={"namespace": ns, "key": key},
-        risk="medium",
+        
     )
 
 
@@ -229,7 +254,7 @@ def _exec_secret_delete(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"🗑️  Deleted secret '{ns}/{key}'.",
         data={"namespace": ns, "key": key},
-        risk="high",
+        
     )
 
 
@@ -240,7 +265,7 @@ def _exec_secret_list(args: dict) -> IntentResult:
         status=ExecutionStatus.SUCCESS,
         message=f"📂 Listed secrets in '{ns}'.",
         data={"namespace": ns},
-        risk="low",
+        
     )
 
 
@@ -266,65 +291,37 @@ def execute(intent: ParsedIntent, confirmed: bool = False) -> IntentResult:
     """
     Validate and execute a parsed intent against the vault.
 
-    Security model:
-      - All args re-validated here (LLM output = untrusted)
-      - High-risk or low-confidence intents gate on `confirmed`
-      - UNKNOWN intent always rejected
+    Simple model:
+      - LLM selects command from catalog
+      - Args validated before execution
+      - User can confirm before destructive actions
 
     Args:
         intent:    Output from parser.parse_intent()
         confirmed: True if user explicitly confirmed (CLI prompt / --yes flag)
 
     Returns:
-        IntentResult with status + message
+        IntentResult with status + message + suggested command
     """
     intent_type = intent["intent"]
     args        = intent["args"]
-    confidence  = intent["confidence"]
-    risk        = intent["risk"]
-    requires_confirm = intent["requires_confirm"]
+    command     = intent.get("command", "")
 
-    # --- Gate 1: confirmation required but not given ---
-    if requires_confirm and not confirmed:
-        return IntentResult(
-            status=ExecutionStatus.REQUIRES_CONFIRM,
-            message=(
-                f"⚠️  This action requires confirmation.\n"
-                f"   Intent:  {intent_type}\n"
-                f"   Risk:    {risk}\n"
-                f"   Summary: {intent['summary']}\n"
-                f"   Run with --yes to confirm."
-            ),
-            risk=risk,
-        )
-
-    # --- Gate 2: validate args ---
+    # --- Validate args ---
     validator = VALIDATORS.get(intent_type)
     if not validator:
         return IntentResult(
             status=ExecutionStatus.REJECTED,
             message=f"❌ No validator for intent '{intent_type}'.",
-            risk="high",
+            command=command
         )
 
     err = validator(args)
     if err:
         return IntentResult(
             status=ExecutionStatus.REJECTED,
-            message=f"❌ Validation failed: {err}",
-            risk=risk,
-        )
-
-    # --- Gate 3: low confidence → surface for manual review ---
-    if confidence < 0.5 and not confirmed:
-        return IntentResult(
-            status=ExecutionStatus.FALLBACK,
-            message=(
-                f"🤔 Low confidence ({confidence:.0%}). Use explicit CLI flags instead:\n"
-                f"   Intent detected: {intent_type}\n"
-                f"   Args: {args}"
-            ),
-            risk=risk,
+            message=f"❌ Validation failed: {err}\nSuggested command: {command}",
+            command=command
         )
 
     # --- Execute ---
@@ -333,14 +330,16 @@ def execute(intent: ParsedIntent, confirmed: bool = False) -> IntentResult:
         return IntentResult(
             status=ExecutionStatus.REJECTED,
             message=f"❌ No executor for intent '{intent_type}'.",
-            risk="high",
+            command=command
         )
 
     try:
-        return executor(args)
+        result = executor(args)
+        result.command = command
+        return result
     except Exception as e:
         return IntentResult(
             status=ExecutionStatus.FAILED,
             message=f"❌ Execution failed: {e}",
-            risk=risk,
+            command=command
         )
