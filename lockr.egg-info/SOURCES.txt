@@ -16,6 +16,7 @@ server/audit.py
 server/auth.py
 server/crypto.py
 server/main.py
+server/rotation.py
 server/store.py
 server/compliance/__init__.py
 server/compliance/checker.py

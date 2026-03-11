@@ -18,14 +18,18 @@ Usage:
   lockr compliance report --framework soc2
   lockr audit tail
   lockr audit verify
+  lockr scan
+  lockr guard install
+  lockr guard uninstall
 """
 
 import os
+import re
 import sys
 import getpass
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List, Tuple
 
 import click
 from rich.console import Console
@@ -109,9 +113,12 @@ def init(env: str):
         console.print("[yellow]⚠[/yellow]  .vault/ already exists.")
         sys.exit(1)
 
-    # Generate KEK keypair
-    pk, sk = generate_keypair()
-    master_key = encode_master_key(pk, sk)
+    # Reuse VAULT_MASTER_KEY if already set, otherwise generate a new keypair
+    if os.environ.get("VAULT_MASTER_KEY"):
+        master_key = os.environ["VAULT_MASTER_KEY"]
+    else:
+        pk, sk = generate_keypair()
+        master_key = encode_master_key(pk, sk)
 
     # Create bootstrap admin token
     auth  = AuthStore()
@@ -925,6 +932,265 @@ def rotate_rollback(path: str, version: int, yes: bool):
     else:
         console.print(f"[red]✗[/red] Version {version} not found for {path}")
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# scan / guard  — detect plaintext secrets before they hit git
+# ---------------------------------------------------------------------------
+
+# File names/patterns that are likely to hold raw credentials
+_SENSITIVE_FILENAME_PATTERNS = [
+    r"config\.env$",
+    r"\.env$",
+    r"\.env\.",
+    r"secrets?\.",
+    r"credentials?\.",
+    r"api[_-]?keys?\.",
+    r"private[_-]?key",
+    r"\.pem$",
+    r"\.key$",
+    r"\.p12$",
+    r"\.pfx$",
+    r"id_rsa",
+    r"id_ed25519",
+    r"id_ecdsa",
+    r"auth\.json$",
+    r"token\.json$",
+    r"service[_-]?account",
+]
+
+# Content patterns that look like hardcoded credentials
+_SECRET_CONTENT_PATTERNS = [
+    (r"[A-Za-z_]*API[_-]?KEY\s*=\s*['\"]?[A-Za-z0-9/+_\-]{16,}", "API key assignment"),
+    (r"[A-Za-z_]*SECRET\s*=\s*['\"]?[A-Za-z0-9/+_\-]{16,}", "SECRET assignment"),
+    (r"[A-Za-z_]*TOKEN\s*=\s*['\"]?[A-Za-z0-9/+_\-]{16,}", "TOKEN assignment"),
+    (r"[A-Za-z_]*PASSWORD\s*=\s*['\"]?[A-Za-z0-9/+_\-]{8,}", "PASSWORD assignment"),
+    (r"[A-Za-z_]*MASTER[_-]?KEY\s*=\s*['\"]?[A-Za-z0-9/+_\-]{16,}", "MASTER_KEY assignment"),
+    (r"[A-Za-z_]*PRIVATE[_-]?KEY\s*=\s*['\"]?[A-Za-z0-9/+_\-]{16,}", "PRIVATE_KEY assignment"),
+    (r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----", "PEM private key"),
+    (r"sk-[A-Za-z0-9]{20,}", "OpenAI API key"),
+    (r"AIza[A-Za-z0-9_\-]{35}", "Google API key"),
+    (r"AKIA[A-Za-z0-9]{16}", "AWS access key"),
+    (r"ghp_[A-Za-z0-9]{36}", "GitHub personal token"),
+    (r"xox[baprs]-[A-Za-z0-9\-]+", "Slack token"),
+]
+
+# Directories to skip entirely
+_SKIP_DIRS = {".git", ".vault", "__pycache__", "node_modules", ".venv", "venv", ".tox"}
+
+# Binary-ish extensions to skip content scanning
+_SKIP_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg",
+    ".zip", ".tar", ".gz", ".bz2", ".xz",
+    ".exe", ".so", ".dylib", ".dll", ".pyc",
+    ".pdf", ".bin",
+}
+
+
+def _scan_directory(root: Path) -> Tuple[List[dict], List[dict]]:
+    """
+    Walk *root* and return (filename_hits, content_hits).
+
+    filename_hits: [{"file": str, "pattern": str}]
+    content_hits:  [{"file": str, "line": int, "kind": str, "snippet": str}]
+    """
+    filename_hits: List[dict] = []
+    content_hits: List[dict] = []
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune skip dirs in-place so os.walk doesn't descend into them
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+
+        for fname in filenames:
+            rel = Path(dirpath) / fname
+            rel_str = str(rel.relative_to(root))
+
+            # --- filename check ---
+            for pat in _SENSITIVE_FILENAME_PATTERNS:
+                if re.search(pat, fname, re.IGNORECASE):
+                    filename_hits.append({"file": rel_str, "pattern": pat})
+                    break  # one hit per file is enough
+
+            # --- content check ---
+            if rel.suffix.lower() in _SKIP_EXTENSIONS:
+                continue
+            try:
+                text = rel.read_text(errors="replace")
+            except OSError:
+                continue
+
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                for pat, kind in _SECRET_CONTENT_PATTERNS:
+                    m = re.search(pat, line)
+                    if m:
+                        snippet = line.strip()[:80]
+                        content_hits.append({
+                            "file": rel_str,
+                            "line": lineno,
+                            "kind": kind,
+                            "snippet": snippet,
+                        })
+                        break  # one hit per line
+
+    return filename_hits, content_hits
+
+
+@cli.command("scan")
+@click.option("--path", "scan_path", default=".", show_default=True,
+              help="Directory to scan (default: current directory).")
+@click.option("--exit-code", is_flag=True,
+              help="Exit with code 1 if any issues are found (useful in CI).")
+def scan(scan_path: str, exit_code: bool):
+    """Scan for plaintext API keys and sensitive files before committing to git."""
+    root = Path(scan_path).resolve()
+    if not root.is_dir():
+        console.print(f"[red]✗[/red] Not a directory: {scan_path}")
+        sys.exit(1)
+
+    console.print(f"[dim]Scanning {root} …[/dim]")
+    fn_hits, ct_hits = _scan_directory(root)
+
+    if not fn_hits and not ct_hits:
+        console.print("[green]✓[/green] No exposed secrets or sensitive files detected.")
+        return
+
+    # ---- filename hits ----
+    if fn_hits:
+        table = Table(title="⚠  Sensitive files detected", show_lines=True,
+                      border_style="yellow")
+        table.add_column("File", style="bold yellow")
+        table.add_column("Matched pattern", style="dim")
+        for h in fn_hits:
+            table.add_row(h["file"], h["pattern"])
+        console.print(table)
+
+    # ---- content hits ----
+    if ct_hits:
+        table = Table(title="🔑  Possible hardcoded secrets", show_lines=True,
+                      border_style="red")
+        table.add_column("File", style="bold red")
+        table.add_column("Line", style="cyan", no_wrap=True)
+        table.add_column("Type", style="yellow")
+        table.add_column("Snippet", style="dim")
+        for h in ct_hits:
+            table.add_row(h["file"], str(h["line"]), h["kind"], h["snippet"])
+        console.print(table)
+
+    console.print()
+    console.print("[bold yellow]Recommendations:[/bold yellow]")
+    console.print("  • Store secrets with [bold]lockr set <path>[/bold] instead of plain files.")
+    console.print("  • Add sensitive filenames to [bold].gitignore[/bold].")
+    console.print("  • Rotate any keys that may already be in git history.")
+
+    if exit_code:
+        sys.exit(1)
+
+
+# ---- guard group ----
+
+@cli.group("guard")
+def guard():
+    """Install / remove a git pre-commit hook that runs lockr scan."""
+    pass
+
+
+_HOOK_MARKER = "# lockr-guard"
+
+
+def _hook_script(lockr_bin: str) -> str:
+    return f"""\
+{_HOOK_MARKER}
+# Auto-installed by lockr guard install — DO NOT EDIT THIS BLOCK
+if [ "${{LOCKR_SKIP}}" = "1" ]; then
+    echo "[lockr guard] LOCKR_SKIP=1 — skipping secret scan."
+else
+    "{lockr_bin}" scan --exit-code || {{
+        echo ""
+        echo "Commit blocked by lockr guard. Use 'LOCKR_SKIP=1 git commit' to override."
+        exit 1
+    }}
+fi
+# end lockr-guard
+"""
+
+
+def _find_git_root(start: Path) -> Optional[Path]:
+    current = start.resolve()
+    for parent in [current, *current.parents]:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
+@guard.command("install")
+def guard_install():
+    """Install lockr scan as a git pre-commit hook in this repository."""
+    git_root = _find_git_root(Path("."))
+    if git_root is None:
+        console.print("[red]✗[/red] Not inside a git repository.")
+        sys.exit(1)
+
+    lockr_bin = sys.executable.replace("python", "lockr")
+    # Prefer the actual lockr entry-point next to the current Python binary
+    bin_dir = Path(sys.executable).parent
+    candidate = bin_dir / "lockr"
+    if candidate.exists():
+        lockr_bin = str(candidate)
+    else:
+        import shutil
+        lockr_bin = shutil.which("lockr") or "lockr"
+
+    hook_path = git_root / ".git" / "hooks" / "pre-commit"
+    script = _hook_script(lockr_bin)
+
+    if hook_path.exists():
+        existing = hook_path.read_text()
+        if _HOOK_MARKER in existing:
+            console.print("[yellow]⚠[/yellow]  lockr guard is already installed.")
+            return
+        with hook_path.open("a") as fh:
+            fh.write("\n" + script)
+        console.print(f"[green]✓[/green] Appended lockr guard to existing hook: {hook_path}")
+    else:
+        hook_path.write_text("#!/bin/bash\n" + script)
+        hook_path.chmod(0o755)
+        console.print(f"[green]✓[/green] Created pre-commit hook: {hook_path}")
+
+    console.print("[dim]Set LOCKR_SKIP=1 to bypass the scan for a single commit.[/dim]")
+
+
+@guard.command("uninstall")
+def guard_uninstall():
+    """Remove the lockr scan block from the pre-commit hook."""
+    git_root = _find_git_root(Path("."))
+    if git_root is None:
+        console.print("[red]✗[/red] Not inside a git repository.")
+        sys.exit(1)
+
+    hook_path = git_root / ".git" / "hooks" / "pre-commit"
+    if not hook_path.exists():
+        console.print("[dim]No pre-commit hook found — nothing to do.[/dim]")
+        return
+
+    existing = hook_path.read_text()
+    if _HOOK_MARKER not in existing:
+        console.print("[dim]lockr guard is not installed in this hook — nothing to do.[/dim]")
+        return
+
+    # Strip everything between _HOOK_MARKER lines
+    cleaned = re.sub(
+        r"\n?# lockr-guard.*?# end lockr-guard\n?",
+        "",
+        existing,
+        flags=re.DOTALL,
+    ).strip()
+
+    if cleaned in ("", "#!/bin/bash"):
+        hook_path.unlink()
+        console.print(f"[green]✓[/green] Removed empty hook file: {hook_path}")
+    else:
+        hook_path.write_text(cleaned + "\n")
+        console.print(f"[green]✓[/green] Removed lockr guard block from: {hook_path}")
 
 
 # ---------------------------------------------------------------------------
