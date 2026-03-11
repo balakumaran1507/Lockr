@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Intent parser — LLM classification via local Ollama with fallback."""
+"""Intent parser — LLM classification via inference.py (pure stdlib, no httpx)."""
 
 import json
-import httpx
-import asyncio
+import urllib.request
+import urllib.error
 from typing import Optional
 
 from .prompts import (
@@ -15,16 +15,59 @@ from .prompts import (
     SYSTEM_PROMPT,
 )
 
-# Ollama config — local qwen2.5-coder via Ollama
 OLLAMA_URL   = "http://localhost:11434/api/chat"
 OLLAMA_MODEL = "qwen2.5-coder:7b-instruct-q4_K_M"
-TIMEOUT_S    = 30
+TIMEOUT_S    = 60
 
+
+# ---------------------------------------------------------------------------
+# Ollama call — mirrors inference.py exactly
+# ---------------------------------------------------------------------------
+
+def _call_model(user_input: str) -> str:
+    """
+    Hit local Ollama. Pure stdlib — no httpx, no async.
+    Raises RuntimeError if Ollama is unreachable.
+    """
+    payload = {
+        "model":  OLLAMA_MODEL,
+        "stream": False,
+        "options": {"temperature": 0.0},  # classifier — deterministic
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user",   "content": user_input},
+        ],
+    }
+
+    req = urllib.request.Request(
+        OLLAMA_URL,
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+        data = json.loads(resp.read().decode())
+        return data["message"]["content"].strip()
+
+
+def is_ollama_running() -> bool:
+    """Quick health check before any model call."""
+    try:
+        urllib.request.urlopen("http://localhost:11434", timeout=3)
+        return True
+    except Exception:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Fallback — keyword matching when Ollama is down
+# ---------------------------------------------------------------------------
 
 def _fallback_intent(user_input: str) -> ParsedIntent:
     """
-    Regex-free keyword fallback when Ollama is unavailable.
-    Keeps vault operable even with no LLM.
+    Keyword fallback — vault stays operable even with no LLM.
+    Confidence always 0.4 so executor gates on confirm.
     """
     text = user_input.lower()
 
@@ -36,7 +79,7 @@ def _fallback_intent(user_input: str) -> ParsedIntent:
         intent = IntentType.AUDIT_QUERY
     elif any(w in text for w in ["rotate", "rotation"]):
         intent = IntentType.ROTATE_KEYS
-    elif any(w in text for w in ["soc", "iso", "compliance", "ready", "audit report"]):
+    elif any(w in text for w in ["soc", "iso", "compliance", "ready"]):
         intent = IntentType.COMPLIANCE_CHECK
     elif any(w in text for w in ["suspicious", "anomaly", "unusual", "weird"]):
         intent = IntentType.ANOMALY_DETECT
@@ -55,19 +98,19 @@ def _fallback_intent(user_input: str) -> ParsedIntent:
 
     return ParsedIntent(
         intent=intent.value,
-        confidence=0.4,   # Low confidence — fallback path
+        confidence=0.4,
         risk=risk.value,
         args={},
         requires_confirm=(intent in CONFIRM_REQUIRED or risk == RiskLevel.HIGH),
-        summary=f"[fallback] Detected intent: {intent.value}. Args require manual confirmation.",
+        summary=f"[fallback] Detected intent: {intent.value}. Args need manual confirmation.",
     )
 
 
+# ---------------------------------------------------------------------------
+# Validate + repair LLM output — never trust it raw
+# ---------------------------------------------------------------------------
+
 def _validate_and_repair(raw: dict, user_input: str) -> ParsedIntent:
-    """
-    Validate LLM output against schema.
-    Repairs missing fields rather than crashing — LLM output is untrusted.
-    """
     valid_intents = {i.value for i in IntentType}
     valid_risks   = {r.value for r in RiskLevel}
 
@@ -75,20 +118,18 @@ def _validate_and_repair(raw: dict, user_input: str) -> ParsedIntent:
     if intent_str not in valid_intents:
         intent_str = IntentType.UNKNOWN.value
 
-    intent = IntentType(intent_str)
-
-    # Risk: trust LLM but floor it at the catalog minimum for safety
-    llm_risk   = raw.get("risk", "low")
+    intent       = IntentType(intent_str)
+    llm_risk     = raw.get("risk", "low")
     catalog_risk = INTENT_RISK_MAP[intent].value
-    risk_order = {"low": 0, "medium": 1, "high": 2}
+    risk_order   = {"low": 0, "medium": 1, "high": 2}
 
-    # Always use the higher of LLM-declared and catalog minimum
     if llm_risk not in valid_risks:
         llm_risk = catalog_risk
+
+    # Floor risk at catalog minimum — LLM can't downgrade safety level
     resolved_risk = llm_risk if risk_order[llm_risk] >= risk_order[catalog_risk] else catalog_risk
 
     confidence = float(raw.get("confidence", 0.0))
-    # Low confidence → escalate to confirm regardless of intent type
     requires_confirm = (
         raw.get("requires_confirm", False)
         or intent in CONFIRM_REQUIRED
@@ -105,42 +146,20 @@ def _validate_and_repair(raw: dict, user_input: str) -> ParsedIntent:
     )
 
 
-async def parse_intent(user_input: str) -> ParsedIntent:
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def parse_intent_sync(user_input: str) -> ParsedIntent:
     """
     Parse natural language into a structured vault intent.
+    Sync — no async needed since we use stdlib urllib.
 
-    Hits local Ollama (qwen2.5-coder). Falls back to keyword
-    matching if Ollama is down — vault always stays operable.
-
-    Args:
-        user_input: Raw natural language from user (e.g. "give john access to staging")
-
-    Returns:
-        ParsedIntent dict — always valid, never raises
+    Falls back to keyword matching if Ollama is down.
+    Always returns a valid ParsedIntent, never raises.
     """
-    messages = [
-        {"role": "user", "content": user_input}
-    ]
-
     try:
-        async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
-            resp = await client.post(
-                OLLAMA_URL,
-                json={
-                    "model":    OLLAMA_MODEL,
-                    "messages": messages,
-                    "system":   SYSTEM_PROMPT,
-                    "stream":   False,
-                    "options": {
-                        "temperature": 0.0,   # Deterministic — this is a classifier
-                        "num_predict": 256,
-                    }
-                }
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
-        content = data["message"]["content"].strip()
+        content = _call_model(user_input)
 
         # Strip markdown fences if model wrapped output
         if content.startswith("```"):
@@ -152,21 +171,16 @@ async def parse_intent(user_input: str) -> ParsedIntent:
         raw = json.loads(content)
         return _validate_and_repair(raw, user_input)
 
-    except httpx.ConnectError:
-        # Ollama not running — silent fallback, vault stays up
-        return _fallback_intent(user_input)
-
-    except httpx.TimeoutException:
+    except urllib.error.URLError:
         return _fallback_intent(user_input)
 
     except (json.JSONDecodeError, KeyError):
-        # LLM returned garbage — fallback
         return _fallback_intent(user_input)
 
     except Exception:
         return _fallback_intent(user_input)
 
 
-def parse_intent_sync(user_input: str) -> ParsedIntent:
-    """Sync wrapper for CLI contexts that aren't async."""
-    return asyncio.run(parse_intent(user_input))
+async def parse_intent(user_input: str) -> ParsedIntent:
+    """Async alias for main.py — just calls sync (urllib is blocking anyway)."""
+    return parse_intent_sync(user_input)

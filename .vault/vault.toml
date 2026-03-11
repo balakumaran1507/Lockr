@@ -1,0 +1,4 @@
+[vault]
+version = "1"
+default_env = "prod"
+kek_algorithm = "FrodoKEM-1344-SHAKE"

@@ -1,0 +1,10 @@
+{
+  "id": "bf7cb59f337fa7b959dc07cd970216acdaa174fd0d203d493f71a62a16c4aa0a",
+  "label": "admin-bootstrap",
+  "scopes": [
+    "*"
+  ],
+  "created": "2026-03-11T09:36:57.297677+00:00",
+  "expires": null,
+  "revoked": false
+}
