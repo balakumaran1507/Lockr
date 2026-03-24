@@ -1,15 +1,26 @@
 #!/bin/bash
-# demo.sh — Lockr live feature walkthrough
+#
+# Lockr Demo: Feature Walkthrough & Compliance Example
+#
+# This script showcases the core functionalities of Lockr, a Git-architecture
+# secrets manager. It demonstrates secret management, environment isolation,
+# auditing, rotation, and compliance features, culminating in a secrets scan
+# and Git pre-commit hook demonstration.
 #
 # Usage:
-#   bash demo.sh           # runs straight through (CI-friendly)
-#   bash demo.sh --pause   # pauses between sections (for live demos)
-
+#   bash demo.sh           # Runs through all steps automatically (CI-friendly)
+#   bash demo.sh --pause   # Pauses between sections for live demonstrations
+#
+# Requirements:
+#   - Python 3.11+
+#   - A virtual environment with Lockr installed:
+#     python -m venv .venv && .venv/bin/pip install -e .
+#
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-LOCKR="$SCRIPT_DIR/.venv/bin/lockr"
-PYEXEC="$SCRIPT_DIR/.venv/bin/python"
+PYEXEC="$SCRIPT_DIR/venv/bin/python"
+LOCKR="PYTHONPATH=\"$SCRIPT_DIR\" $PYEXEC -m cli.lockr"
 DEMO_DIR="/tmp/lockr-demo"
 PAUSE_MODE=0
 
@@ -42,9 +53,9 @@ pause() {
 
 # ── pre-flight ───────────────────────────────────────────────────────────────
 
-if [[ ! -f "$LOCKR" ]]; then
-  echo -e "${RED}✗ .venv not found.${NC}"
-  echo "  Run:  python -m venv .venv && .venv/bin/pip install -e ."
+if [[ ! -f "$PYEXEC" ]]; then
+  echo -e "${RED}✗ Virtual environment not found or not set up.${NC}"
+  echo "  Please run: python -m venv .venv && .venv/bin/pip install -e ."
   exit 1
 fi
 
@@ -60,9 +71,9 @@ pk, sk = generate_keypair()
 print(encode_master_key(pk, sk))
 ")
 
-echo -e "\n${BOLD}🔐  Lockr — Live Demo${NC}"
-echo -e "${DIM}    Working directory : $DEMO_DIR${NC}"
-echo -e "${DIM}    lockr binary      : $LOCKR${NC}"
+echo -e "\n${GREEN}${BOLD}🔐 Lockr Demo: Feature Walkthrough${NC}"
+echo -e "${DIM}    Demonstration working directory: $DEMO_DIR${NC}"
+echo -e "${DIM}    Lockr invocation command: $LOCKR${NC}"
 
 # ============================================================================
 banner "1 · init — create an encrypted vault"
@@ -282,8 +293,9 @@ pause
 
 # ============================================================================
 echo -e "\n${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${GREEN}${BOLD}  All features demonstrated successfully.${NC}"
+echo -e "${GREEN}${BOLD}  Lockr Demo Complete: All Features Demonstrated.${NC}"
 echo -e "${GREEN}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
-echo -e "  Vault at  : ${BOLD}$DEMO_DIR/.vault/${NC}"
-echo -e "  Full help : ${BOLD}lockr --help${NC}"
+echo -e "  For further exploration, you can inspect the generated vault at:"
+echo -e "  ${BOLD}$DEMO_DIR/.vault/${NC}"
+echo -e "  Access comprehensive help with: ${BOLD}$LOCKR --help${NC}"
 echo ""

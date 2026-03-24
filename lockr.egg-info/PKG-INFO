@@ -1,17 +1,52 @@
 Metadata-Version: 2.4
 Name: lockr
 Version: 0.1.0
-Summary: Git-architecture secrets manager with post-quantum encryption and SOC-2 evidence.
+Summary: Git-style secrets manager with post-quantum encryption and automated SOC-2 compliance reports
+Home-page: https://github.com/yourusername/lockr
+Author: Lockr Team
+Author-email: hello@lockr.dev
+Project-URL: Bug Tracker, https://github.com/yourusername/lockr/issues
+Project-URL: Documentation, https://github.com/yourusername/lockr#readme
+Project-URL: Source Code, https://github.com/yourusername/lockr
+Keywords: secrets security encryption vault compliance soc2 iso27001 post-quantum
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: System Administrators
+Classifier: Topic :: Security
+Classifier: Topic :: Security :: Cryptography
+Classifier: Topic :: System :: Systems Administration
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Operating System :: OS Independent
 Requires-Python: >=3.11
-Requires-Dist: fastapi>=0.111
-Requires-Dist: uvicorn[standard]>=0.29
-Requires-Dist: click>=8.1
-Requires-Dist: rich>=13.7
-Requires-Dist: cryptography>=42.0
-Requires-Dist: httpx>=0.27
-Requires-Dist: pydantic>=2.0
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi<1.0,>=0.111
+Requires-Dist: uvicorn[standard]<1.0,>=0.29
+Requires-Dist: click<9.0,>=8.1
+Requires-Dist: rich<14.0,>=13.7
+Requires-Dist: cryptography<43.0,>=42.0
+Requires-Dist: httpx<1.0,>=0.27
+Requires-Dist: pydantic<3.0,>=2.0
+Requires-Dist: reportlab<5.0,>=4.0
+Requires-Dist: toml>=0.10.2
 Provides-Extra: pq
 Requires-Dist: liboqs-python>=0.10; extra == "pq"
+Provides-Extra: dev
+Requires-Dist: pytest<9.0,>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio<1.0,>=0.23; extra == "dev"
+Requires-Dist: pytest-cov<5.0,>=4.1; extra == "dev"
+Requires-Dist: black<25.0,>=24.0; extra == "dev"
+Requires-Dist: ruff<1.0,>=0.3; extra == "dev"
+Requires-Dist: mypy<2.0,>=1.9; extra == "dev"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: project-url
 Dynamic: provides-extra
 Dynamic: requires-dist
 Dynamic: requires-python
